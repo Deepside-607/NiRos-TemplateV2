@@ -232,10 +232,28 @@
     <!--
         SAFE DATA STORE - Rebecca Go panel (pongo2) bindings.
         data-sub falls back from user.subscription_url to the legacy
-        top-level subscription_url. The configs-data block below is
-        rendered server-side from the links list so no client-side fetch
-        of the subscription URL is required, and JS only falls back to
-        fetch() if that block comes out empty.
+        top-level subscription_url (used only as a last-resort fallback
+        for fetchConfigs(); the "copy subscription link" button itself
+        always copies window.location.href, i.e. the exact URL the user
+        actually opened, per the newer requirement below).
+
+        configs-data / l2tp-data / pptp-data / ov-data are rendered
+        server-side from the real context Rebecca now exposes after the
+        L2TP + PPTP + OpenVPN update:
+            links            -> proxy configs (vmess/vless/trojan/ss/...)
+            l2tp             -> list of L2TP accounts
+            pptp             -> list of PPTP accounts
+            ov.username/pass -> shared OpenVPN credentials (optional)
+            ov.downloads     -> list of downloadable .ovpn file URLs
+        Each protocol is optional/possibly empty. Proxy configs still
+        render inline in the existing "Connections" section; L2TP, PPTP
+        and OpenVPN each get their OWN collapsible section built with the
+        exact same section-box/config-card markup, and that section is
+        only added to the page at all when the inbound actually has data
+        — so the UI is byte-for-byte identical when a protocol is absent.
+        When username/password is missing on an account that does exist,
+        the card explicitly says so ("No username" / "No password", or
+        the FA/RU/AR equivalents) instead of hiding the line.
     -->
     <div id="data-core"
          data-user="{{ user.username|default:"User" }}"
@@ -244,9 +262,17 @@
          data-limit="{{ user.data_limit|default:0 }}"
          data-expire="{{ user.expire|default:0 }}"
          data-sub="{{ user.subscription_url|default:subscription_url|default:"" }}"
+         data-ov-user="{{ ov.username|default:"" }}"
+         data-ov-pass="{{ ov.password|default:"" }}"
          style="display:none;">
     </div>
     <pre id="configs-data" style="display:none;">{% for link in links %}{{ link }}
+{% endfor %}</pre>
+    <pre id="l2tp-data" style="display:none;">{% for acc in l2tp %}{{ acc.remark|default:"L2TP" }}‖{{ acc.address|default:acc.server|default:"" }}‖{{ acc.port|default:"" }}‖{{ acc.username|default:acc.user|default:"" }}‖{{ acc.password|default:acc.pass|default:"" }}
+{% endfor %}</pre>
+    <pre id="pptp-data" style="display:none;">{% for acc in pptp %}{{ acc.remark|default:"PPTP" }}‖{{ acc.address|default:acc.server|default:"" }}‖{{ acc.port|default:"" }}‖{{ acc.username|default:acc.user|default:"" }}‖{{ acc.password|default:acc.pass|default:"" }}
+{% endfor %}</pre>
+    <pre id="ov-data" style="display:none;">{% for u in ov.downloads %}{{ u }}
 {% endfor %}</pre>
     <!-- BACKGROUND ANIMATION -->
     <div class="ambient-light">
@@ -400,28 +426,36 @@
                 unlimited: "حجم نامحدود",
                 days: "روز", remaining: "باقی‌مانده", copy_link: "کپی لینک اشتراک",
                 connections: "کانکشن‌ها", copy_all: "کپی همه کانفیگ‌ها", downloads: "دانلود برنامه‌ها",
-                copied: "کپی شد!", scan: "اسکن کنید", dir: "rtl"
+                copied: "کپی شد!", scan: "اسکن کنید", dir: "rtl",
+                username: "یوزرنیم", password: "پسورد", no_username: "یوزرنیم ندارد", no_password: "پسورد ندارد",
+                download_file: "دانلود فایل"
             },
             en: {
                 active: "Active", limited: "Limited", expired: "Expired", disabled: "Disabled", pending: "Pending",
                 unlimited: "Unlimited Data",
                 days: "Days", remaining: "Remaining", copy_link: "Copy Subscription",
                 connections: "Connections", copy_all: "Copy All Configs", downloads: "Downloads",
-                copied: "Copied!", scan: "Scan QR", dir: "ltr"
+                copied: "Copied!", scan: "Scan QR", dir: "ltr",
+                username: "Username", password: "Password", no_username: "No username", no_password: "No password",
+                download_file: "Download file"
             },
             ru: {
                 active: "Активный", limited: "Лимит", expired: "Истек", disabled: "Отключено", pending: "В ожидании",
                 unlimited: "Безлимит",
                 days: "дней", remaining: "Осталось", copy_link: "Ссылка подписки",
                 connections: "Конфигурации", copy_all: "Копировать все", downloads: "Приложения",
-                copied: "Скопировано!", scan: "Сканируйте QR", dir: "ltr"
+                copied: "Скопировано!", scan: "Сканируйте QR", dir: "ltr",
+                username: "Логин", password: "Пароль", no_username: "Нет логина", no_password: "Нет пароля",
+                download_file: "Скачать файл"
             },
             ar: {
                 active: "نشط", limited: "محدود", expired: "منتهية", disabled: "معطل", pending: "قيد الانتظار",
                 unlimited: "بيانات غير محدودة",
                 days: "أيام", remaining: "متبقي", copy_link: "نسخ الرابط",
                 connections: "الاتصالات", copy_all: "نسخ الكل", downloads: "تنزيل",
-                copied: "تم النسخ!", scan: "مسح QR", dir: "rtl"
+                copied: "تم النسخ!", scan: "مسح QR", dir: "rtl",
+                username: "اسم المستخدم", password: "كلمة المرور", no_username: "لا يوجد اسم مستخدم", no_password: "لا توجد كلمة مرور",
+                download_file: "تنزيل الملف"
             }
         };
         const supportedLangs = ['fa', 'en', 'ru', 'ar'];
@@ -534,21 +568,24 @@
         }
 
         // --- CONFIG LOADING ---
-        // Rebecca's Go (pongo2) backend renders the `links` list directly
-        // into the page at request time (#configs-data), so no extra
-        // network round-trip is required and no CORS/auth issue can occur.
-        // If that block is empty (older Marzban/Pasarguard templates that
-        // don't pass `links` into context) we fall back to the legacy
-        // client-side fetch of the subscription URL, exactly like before.
+        // Rebecca's Go (pongo2) backend renders every protocol list directly
+        // into the page at request time (#configs-data / #l2tp-data /
+        // #pptp-data / #ov-data), so no extra network round-trip is
+        // required and no CORS/auth issue can occur. If the proxy list
+        // (#configs-data) is empty (older Marzban/Pasarguard templates
+        // that don't pass `links` into context) we fall back to the
+        // legacy client-side fetch of the subscription URL, exactly like
+        // before. L2TP/PPTP/OpenVPN simply render nothing if empty.
         function loadConfigs() {
             const inline = document.getElementById('configs-data');
             const inlineLines = inline ? inline.textContent.split(/\r?\n/).map(s => s.trim()).filter(x => x.length > 5) : [];
 
             if (inlineLines.length > 0) {
                 renderConfigList(inlineLines);
-                return;
+            } else {
+                fetchConfigs();
             }
-            fetchConfigs();
+            renderExtraProtocols();
         }
 
         function fetchConfigs() {
@@ -572,20 +609,158 @@
             lines.forEach((line, i) => {
                 let proto = line.split('://')[0].toUpperCase();
                 let name = `Config ${i+1}`;
-                if(line.includes('#')) { try { name = decodeURIComponent(line.split('#').pop()); } catch(e){} }
+                if (line.includes('#')) {
+                    const rawRemark = line.substring(line.indexOf('#') + 1);
+                    if (rawRemark) {
+                        try { name = decodeURIComponent(rawRemark); }
+                        catch (e) { name = rawRemark; } // not percent-encoded — use as-is instead of falling back
+                    }
+                }
                 const card = document.createElement('div'); card.className = 'config-card';
                 card.innerHTML = `
                     <div class="prot-icon">${proto.substring(0,3)}</div>
-                    <div class="conf-info"><div class="conf-name">${name}</div><div class="conf-meta">${proto}</div></div>
-                    <button class="action-icon" onclick="copyTxt('${line}')"><i class="ri-file-copy-line"></i></button>
-                    <button class="action-icon" onclick="showQR('${line}')"><i class="ri-qr-code-line"></i></button>
-                    <textarea class="hidden-elm copy-target">${line}</textarea>
+                    <div class="conf-info"><div class="conf-name">${esc(name)}</div><div class="conf-meta">${esc(proto)}</div></div>
+                    <button class="action-icon" onclick="copyTxt(\`${jsStr(line)}\`)"><i class="ri-file-copy-line"></i></button>
+                    <button class="action-icon" onclick="showQR(\`${jsStr(line)}\`)"><i class="ri-qr-code-line"></i></button>
+                    <textarea class="hidden-elm copy-target">${esc(line)}</textarea>
                 `;
                 container.appendChild(card);
             });
         }
 
-        function copyLink() { copyTxt(core.sub || window.location.href); }
+        // --- L2TP / PPTP / OpenVPN (Rebecca update) ---
+        // Each of these protocols only gets its OWN collapsible section
+        // (built from the exact same .section-box/.section-header/
+        // .config-card markup already used by "Connections"), and ONLY
+        // if that inbound actually has data. Nothing is added to the DOM
+        // otherwise, so the UI is 100% unchanged for panels/plans that
+        // don't have L2TP/PPTP/OpenVPN enabled.
+        function parseDelimited(elId) {
+            const el = document.getElementById(elId);
+            if (!el) return [];
+            return el.textContent.split(/\r?\n/)
+                .map(s => s.trim())
+                .filter(s => s.length > 0)
+                .map(line => line.split('‖'));
+        }
+
+        function esc(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+        function jsStr(s) {
+            return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+        }
+
+        function renderExtraProtocols() {
+            const t = i18n[currentLang];
+            ['l2tp-section', 'pptp-section', 'ov-section'].forEach(id => {
+                document.getElementById(id + '-content')?.closest('.section-box')?.remove();
+            });
+            let anchor = document.getElementById('configs-area').closest('.section-box');
+
+            // ---- L2TP ----
+            const l2tpAccounts = parseDelimited('l2tp-data').filter(([, address]) => address);
+            if (l2tpAccounts.length > 0) {
+                const cards = l2tpAccounts.map(([remark, address, port, username, password]) =>
+                    buildCredentialCard('L2TP', remark, address, port, username, password));
+                anchor = insertProtocolSection('l2tp-section', 'ri-shield-keyhole-line', 'L2TP', cards, anchor);
+            }
+
+            // ---- PPTP ----
+            const pptpAccounts = parseDelimited('pptp-data').filter(([, address]) => address);
+            if (pptpAccounts.length > 0) {
+                const cards = pptpAccounts.map(([remark, address, port, username, password]) =>
+                    buildCredentialCard('PPTP', remark, address, port, username, password));
+                anchor = insertProtocolSection('pptp-section', 'ri-shield-keyhole-line', 'PPTP', cards, anchor);
+            }
+
+            // ---- OpenVPN ----
+            const ovEl = document.getElementById('ov-data');
+            const ovLines = ovEl ? ovEl.textContent.split(/\r?\n/).map(s => s.trim()).filter(x => x.length > 5) : [];
+            if (ovLines.length > 0) {
+                const ovUser = core.ovUser || '';
+                const ovPass = core.ovPass || '';
+                const cards = [];
+                // Shared OpenVPN credentials card (username/password always
+                // shown, with an explicit "not set" message when missing).
+                cards.push(buildCredentialCard('OVPN', 'OpenVPN', '', '', ovUser, ovPass, true));
+                // One card per downloadable .ovpn file.
+                ovLines.forEach((url) => {
+                    let fileName = 'config.ovpn';
+                    try { fileName = decodeURIComponent(url.split('/').pop().split('?')[0]) || fileName; } catch(e){}
+                    const card = document.createElement('div'); card.className = 'config-card';
+                    card.innerHTML = `
+                        <div class="prot-icon">OVP</div>
+                        <div class="conf-info">
+                            <div class="conf-name">${esc(fileName)}</div>
+                            <div class="conf-meta">${esc(t.download_file)}</div>
+                        </div>
+                        <button class="action-icon" onclick="window.open('${esc(url)}', '_blank')" title="${esc(t.download_file)}"><i class="ri-download-2-line"></i></button>
+                        <button class="action-icon" onclick="copyTxt(\`${jsStr(url)}\`)"><i class="ri-file-copy-line"></i></button>
+                        <textarea class="hidden-elm copy-target">${esc(url)}</textarea>
+                    `;
+                    cards.push(card);
+                });
+                anchor = insertProtocolSection('ov-section', 'ri-file-shield-2-line', 'OpenVPN', cards, anchor);
+            }
+        }
+
+        function insertProtocolSection(id, iconClass, title, cards, anchor) {
+            const section = document.createElement('div');
+            section.className = 'section-box';
+            const contentId = id + '-content';
+            section.innerHTML = `
+                <div class="section-header" onclick="toggleSection('${contentId}', this)">
+                    <span class="section-title"><i class="${iconClass}"></i> <span>${esc(title)}</span></span>
+                    <i class="ri-arrow-down-s-line toggle-arrow" style="font-size:1.2rem"></i>
+                </div>
+                <div id="${contentId}" class="section-content open"></div>
+            `;
+            const content = section.querySelector(`#${contentId}`);
+            cards.forEach(c => content.appendChild(c));
+            anchor.insertAdjacentElement('afterend', section);
+            return section;
+        }
+
+        // proto: label shown on the small icon chip (max 3 chars used)
+        // remark: friendly name, falls back to proto
+        // address/port: connection endpoint (omitted for OpenVPN, which
+        //               only needs username/password + the file itself)
+        // isSharedCred: when true, this card is the single OpenVPN
+        //               credentials card (no per-account copy-all needed)
+        function buildCredentialCard(proto, remark, address, port, username, password, isSharedCred) {
+            const t = i18n[currentLang];
+            const label = remark && remark !== proto ? remark : proto;
+            const meta = address ? (port ? `${address}:${port}` : address) : '';
+            const userText = username ? `${t.username}: ${username}` : t.no_username;
+            const passText = password ? `${t.password}: ${password}` : t.no_password;
+
+            const card = document.createElement('div'); card.className = 'config-card';
+            let metaLines = meta ? `<div class="conf-meta">${esc(meta)}</div>` : '';
+            metaLines += `<div class="conf-meta">${esc(userText)}</div><div class="conf-meta">${esc(passText)}</div>`;
+
+            let actions = '';
+            if (username) actions += `<button class="action-icon" onclick="copyTxt(\`${jsStr(username)}\`)" title="${esc(t.username)}"><i class="ri-user-line"></i></button>`;
+            if (password) actions += `<button class="action-icon" onclick="copyTxt(\`${jsStr(password)}\`)" title="${esc(t.password)}"><i class="ri-key-2-line"></i></button>`;
+
+            card.innerHTML = `
+                <div class="prot-icon">${esc(proto.substring(0,3))}</div>
+                <div class="conf-info">
+                    <div class="conf-name">${esc(label)}</div>
+                    ${metaLines}
+                </div>
+                ${actions}
+            `;
+            return card;
+        }
+
+        // Copies the exact subscription link the user actually opened
+        // in their browser (window.location.href) — not a value re-built
+        // from panel context — so what gets copied always matches what
+        // was opened (e.g. via a Google/search-indexed URL).
+        function copyLink() { copyTxt(window.location.href); }
         function copyAll() {
             const targets = document.querySelectorAll('.copy-target'); let all = "";
             targets.forEach(t => all += t.value + "\n"); if(all) copyTxt(all);
@@ -602,7 +777,9 @@
             const t = document.getElementById('toast'); document.getElementById('toast-msg').textContent = i18n[currentLang].copied;
             t.classList.add('active'); setTimeout(() => t.classList.remove('active'), 2000);
         }
-        function showMainQR() { showQR(core.sub || window.location.href); }
+        // Same rule as copyLink(): the QR always encodes the URL that's
+        // actually open in the browser right now.
+        function showMainQR() { showQR(window.location.href); }
         function showQR(txt) {
             const el = document.getElementById('qr-display'); el.innerHTML = '';
             new QRCode(el, { text: txt, width: 200, height: 200, colorDark: "#000", colorLight: "#fff" });
