@@ -8,10 +8,50 @@
     <!-- Fonts -->
     <link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/misc/Farsi-Digits/font-face.css" rel="stylesheet" type="text/css" />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700;900&family=Rubik:wght@400;700&display=swap" rel="stylesheet">
-    <!-- Icons -->
-    <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+    <!-- Icons (primary CDN) -->
+    <link id="remixicon-css" href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
     <!-- QR Library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script>
+        // Fallback loader: if the primary Remixicon CDN (jsdelivr) fails
+        // to load or its font-face doesn't actually apply (blocked CDN,
+        // stale/broken cache, filtering, etc.), swap to a secondary CDN
+        // (cdnjs) automatically. Pure reliability fix — no UI/markup change.
+        (function () {
+            var primary = document.getElementById('remixicon-css');
+            var fallbackHref = 'https://cdnjs.cloudflare.com/ajax/libs/remixicon/3.5.0/remixicon.min.css';
+            var swapped = false;
+
+            function swapToFallback() {
+                if (swapped) return;
+                swapped = true;
+                var link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = fallbackHref;
+                document.head.appendChild(link);
+            }
+
+            // Case 1: the <link> itself errors (blocked / 404 / network fail)
+            primary.addEventListener('error', swapToFallback);
+
+            // Case 2: the link "loads" (e.g. served from a broken/empty
+            // cached response) but the icon font never actually renders.
+            // Detect this by checking if an icon glyph actually has width.
+            window.addEventListener('load', function () {
+                setTimeout(function () {
+                    var test = document.createElement('i');
+                    test.className = 'ri-home-line';
+                    test.style.position = 'absolute';
+                    test.style.visibility = 'hidden';
+                    test.style.fontSize = '32px';
+                    document.body.appendChild(test);
+                    var width = test.offsetWidth;
+                    document.body.removeChild(test);
+                    if (width === 0) swapToFallback();
+                }, 300);
+            });
+        })();
+    </script>
     <style>
         /* 
          * ============================================================
